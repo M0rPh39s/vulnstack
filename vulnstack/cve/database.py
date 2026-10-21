@@ -22,6 +22,17 @@ from vulnstack.logging_config import get_logger
 log = get_logger("database")
 
 
+def _sort_key(ts: str) -> str:
+    # Normalize "...Z" / "+00:00" / naive stamps so they sort chronologically.
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return ts
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -144,8 +155,16 @@ class Database:
         conn = self.connect()
         return list(conn.execute("SELECT * FROM data_sources ORDER BY name"))
 
-    def last_successful_sync(self, name: str) -> str | None:
-        """Wall-clock time of the last successful sync, or None if never."""
+    def last_successful_sync(self, name: str | None = None) -> str | None:
+        """Wall-clock time of the last successful sync, or None if never.
+
+        With no ``name``, the most recent across all sources (so freshness is
+        meaningful whichever source — NVD, a pulled release, a CVE List tree —
+        populated the database).
+        """
+        if name is None:
+            times = [r["last_sync_time"] for r in self.all_sources() if r["last_sync_time"]]
+            return max(times, key=_sort_key) if times else None
         row = self.get_source(name)
         return row["last_sync_time"] if row else None
 

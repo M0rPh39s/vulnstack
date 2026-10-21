@@ -20,12 +20,12 @@ import traceback
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from vulnstack import __version__, config as config_mod, paths
 from vulnstack.cve import cve_json, nvd  # noqa: F401  (register providers)
-from vulnstack.cve import providers
+from vulnstack.cve import distribution, providers
 from vulnstack.cve.database import Database
 from vulnstack.cve.updater import Updater
 from vulnstack.logging_config import configure_logging
@@ -90,14 +90,23 @@ def build_parser() -> argparse.ArgumentParser:
     # db
     p_db = sub.add_parser("db", help="manage the local vulnerability database")
     db_sub = p_db.add_subparsers(dest="db_command", metavar="<subcommand>")
-    p_db_update = db_sub.add_parser("update", help="update the database (incremental by default)")
-    p_db_update.add_argument("--full", action="store_true", help="full synchronization/rebuild")
-    p_db_update.add_argument("--source", default=None, help="data source (default: nvd)")
+    p_db_update = db_sub.add_parser(
+        "update", help="update the database (pulls the published database by default)")
+    p_db_update.add_argument("--full", action="store_true",
+                             help="full synchronization/rebuild (for 'repo': re-download the whole database)")
+    p_db_update.add_argument("--source", default=None,
+                             help="repo (published database, default), nvd (query NVD directly) or cvelist")
     p_db_update.add_argument("--bootstrap-days", type=int, default=30,
                              help="window for the first incremental run (default 30)")
     p_db_update.add_argument("--cvelist-path", default=None,
                              help="local path for the 'cvelist' source")
     p_db_update.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
+    p_db_publish = db_sub.add_parser(
+        "publish", help="build release files (full DB, delta, manifest) from the local database")
+    p_db_publish.add_argument("--out", required=True, help="output directory")
+    p_db_publish.add_argument("--delta-days", type=int, default=distribution.DEFAULT_DELTA_DAYS,
+                              help=f"days of changes in the delta file (default {distribution.DEFAULT_DELTA_DAYS})")
+    p_db_publish.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_db_status = db_sub.add_parser("status", help="show database status")
     p_db_status.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_db_stats = db_sub.add_parser("stats", help="show database statistics")
@@ -263,8 +272,67 @@ def _progress_callback(progress: Progress, task_id):
     return cb
 
 
+def _pull_database(args: argparse.Namespace, cfg: config_mod.Config, console: Console) -> int:
+    db = Database(cfg.database_path)
+    console.print("[bold]VulnStack vulnerability database updater[/bold]")
+    console.print(f"Source: repo ({distribution.RELEASE_BASE_URL})")
+    console.print("Checking the published database...")
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Downloading", total=None)
+            result = distribution.pull(
+                db, force_full=args.full, progress=_progress_callback(progress, task))
+    except distribution.NotPublishedError as exc:
+        console.print(f"[red]{exc}[/red]")
+        console.print("No database has been published yet. Build one yourself with "
+                      "'vulnstack db update --source nvd'.")
+        return EXIT_ERROR
+    except distribution.DistributionError as exc:
+        console.print(f"[red]Update failed:[/red] {exc}")
+        console.print("The existing local database was not modified. "
+                      "You can also use 'vulnstack db update --source nvd'.")
+        return EXIT_ERROR
+    finally:
+        db.close()
+
+    console.print()
+    console.print(f"Mode:             {result.mode}")
+    console.print(f"Records inserted: {result.inserted}")
+    console.print(f"Records updated:  {result.updated}")
+    console.print(f"Published build:  {result.built_at} ({result.record_count} records)")
+    console.print(f"Synchronization status: [green]success[/green] — {result.message}")
+    return EXIT_OK
+
+
+def cmd_db_publish(args: argparse.Namespace, cfg: config_mod.Config, console: Console) -> int:
+    db = Database(cfg.database_path)
+    try:
+        manifest = distribution.build_release(db, args.out, delta_days=args.delta_days)
+    except distribution.DistributionError as exc:
+        console.print(f"[red]Publish failed:[/red] {exc}")
+        return EXIT_ERROR
+    finally:
+        db.close()
+    full, delta = manifest["full"], manifest["delta"]
+    console.print(f"[green]Release files written to[/green] {args.out}")
+    console.print(f"  {full['file']}: {full['size']:,} bytes ({manifest['record_count']} records)")
+    console.print(f"  {delta['file']}: {delta['size']:,} bytes ({delta['count']} records since {delta['since']})")
+    console.print(f"  {distribution.MANIFEST_NAME}: watermark {manifest['watermark']}")
+    console.print("Upload the data files first and the manifest last.")
+    return EXIT_OK
+
+
 def cmd_db_update(args: argparse.Namespace, cfg: config_mod.Config, console: Console) -> int:
     source = args.source or cfg.default_source
+    if source == "repo":
+        return _pull_database(args, cfg, console)
     provider_kwargs: dict = {}
     if source == "nvd":
         provider_kwargs["api_key"] = config_mod.nvd_api_key()
@@ -479,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "db":
             if args.db_command == "update":
                 return cmd_db_update(args, cfg, console)
+            if args.db_command == "publish":
+                return cmd_db_publish(args, cfg, console)
             if args.db_command == "status":
                 return cmd_db_status(args, cfg, console)
             if args.db_command == "stats":

@@ -44,6 +44,9 @@ CVE IDs.
   caps. No exploitation, ever.
 - **Terminal, JSON and HTML reports** that distinguish confirmed version
   matches from uncertain candidates and never imply exploitability.
+- **Pre-built database distribution**: `vulnstack db update` downloads a
+  verified, daily-built database from this project's GitHub release instead of
+  crawling NVD (direct NVD access remains available).
 - **Offline operation** once the database is populated.
 
 ## Supported technologies
@@ -116,10 +119,11 @@ vulnstack --help
 ## Quick start
 
 ```bash
-# 1. Populate the local vulnerability database (first run fetches a recent
-#    window; use --full for the complete corpus).
-vulnstack db update            # incremental (recent window on first run)
-vulnstack db update --full     # full synchronization (large; see below)
+# 1. Populate the local vulnerability database. By default this downloads the
+#    pre-built database published by this project (fast; no NVD crawl).
+vulnstack db update            # delta if you are close, full download otherwise
+vulnstack db update --full     # force a complete re-download
+vulnstack db update --source nvd   # or query NVD yourself (slow; see below)
 
 # 2. Scan a site — technology detection + automatic CVE correlation.
 vulnstack scan https://example.com
@@ -144,8 +148,9 @@ vulnstack technologies <url> [--format ...] [--output FILE] [--timeout ...]
 vulnstack cve search "<term>" [--limit N]
 vulnstack cve show CVE-YYYY-NNNNN
 
-vulnstack db update [--full] [--source nvd|cvelist] [--bootstrap-days N]
+vulnstack db update [--full] [--source repo|nvd|cvelist] [--bootstrap-days N]
                     [--cvelist-path PATH]
+vulnstack db publish --out DIR [--delta-days N]
 vulnstack db status
 vulnstack db stats
 vulnstack db clear [--yes]
@@ -189,19 +194,81 @@ vulnstack scan https://example.com --show-unmatched
 The database lives at `~/.local/share/vulnstack/vulnstack.db` by default
 (override with `VULNSTACK_DATABASE` or config).
 
-- **`vulnstack db update`** — incremental. Fetches only records modified since
+- **`vulnstack db update`** (default source `repo`) — downloads the database
+  this project publishes to the `db-latest` release of
+  `github.com/M0rPh39s/vulnstack` (see *Published database* below). It never
+  contacts NVD.
+- **`vulnstack db update --source nvd`** — incremental, directly from NVD. Fetches only records modified since
   the last successful synchronization (with a small overlap so boundary
   records are not skipped). On the very first run with no prior sync it fetches
   a recent window (`--bootstrap-days`, default 30) and tells you so; run a full
   sync for the complete dataset. The window is whole days, and a busy day is
   large: one day of NVD modifications was ~3,900 records when measured.
-- **`vulnstack db update --full`** — full synchronization/rebuild. This can
+- **`vulnstack db update --full`** — with the default source, re-downloads the
+  whole published database. With `--source nvd`, a full synchronization/rebuild. This can
   download the entire NVD corpus (hundreds of thousands of records): expect
   significant **network, time and disk** usage. The rebuild is written to a
   temporary database, validated, and only then atomically installed — a failed
   full sync never destroys your existing database.
-- **`vulnstack db update --source nvd`** — select the data source (default
-  `nvd`; `cvelist` is also available, see below).
+- **`--source`** selects the data source: `repo` (default), `nvd`, or `cvelist`
+  (see below). Set `default_source` in the config file to change the default,
+  e.g. `default_source = "nvd"`.
+
+### Published database
+
+The project's scheduled workflow (`.github/workflows/update-db.yml`) builds the
+database from NVD once a day and attaches three files to the `db-latest`
+release: `manifest.json`, a full database, and a delta of the last
+7 days of changes. `vulnstack db update` fetches the manifest and then:
+
+| Local state | Action |
+|-------------|--------|
+| Already at the published build | nothing (only the small manifest is downloaded) |
+| Behind by less than the delta window | downloads and applies the delta |
+| Empty, older, or `--full` | downloads the full database and installs it |
+
+Safeguards: the download location is a fixed constant (not configurable), only
+HTTPS to GitHub hosts is followed and each redirect hop is checked before it is
+requested; every file must match the exact size and SHA-256 in the manifest and
+is capped in compressed and decompressed size; a full database is validated
+(schema version, SQLite integrity check, record count) in a temporary file and
+only then atomically swapped in; a delta is parsed completely before any record
+is applied. A failed pull leaves your existing database untouched.
+
+Things to know:
+
+- The data is **as fresh as the last scheduled build** (daily), not live. Use
+  `--source nvd` when you need records from the last few hours.
+- A full install **replaces** the local database file, including records you
+  ingested from another source such as `cvelist`.
+- The checksum comes from the same release as the files, so it protects against
+  corruption and truncation, not against someone who can modify the release.
+  You are trusting this repository's release, as with any binary download.
+- If nothing has been published yet, or the release is unreachable, `db update`
+  exits `1` and suggests `--source nvd`.
+- Data is from the NVD. This product uses the NVD API but is not endorsed or
+  certified by the NVD.
+
+### Publishing the database (maintainers)
+
+1. Add a repository secret `NVD_API_KEY`.
+2. Seed the first release. Either run the *Update vulnerability database*
+   workflow manually with **full** ticked, or — if a full NVD crawl would exceed
+   GitHub's 6-hour job limit — do it locally and upload by hand:
+   ```bash
+   export NVD_API_KEY=...
+   vulnstack db update --source nvd --full
+   vulnstack db publish --out dist
+   gh release create db-latest --latest=false --title "Vulnerability database" --notes "Built from NVD"
+   gh release upload db-latest dist/vulnstack-db-full.sqlite.gz dist/vulnstack-db-delta.jsonl.gz
+   gh release upload db-latest dist/manifest.json     # always last
+   ```
+3. After that the daily workflow starts from the published database, fetches
+   what changed from NVD, and republishes. `db publish` refuses to publish an
+   empty database or one without a successful sync.
+
+The workflow itself has not been run end to end in CI; the publish/pull logic is
+covered by the test suite and was exercised against real NVD data locally.
 
 NVD rate limits are respected automatically (5 requests / 30 s without a key,
 50 with one). NVD serves large pages slowly, so VulnStack requests 200 records
@@ -416,12 +483,13 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite (324 tests, ~95% line coverage) covers CLI behaviour, exit codes and
+The suite (393 tests, ~95% line coverage) covers CLI behaviour, exit codes and
 error paths, fingerprinting (one test per catalogue signature plus
 false-positive regressions), product mapping, version comparison, the database
 (migrations, upserts, transactions, foreign keys, injection-safety), the update
 engine (incremental, full, mid-stream failure/recovery, watermark handling,
 dedup, date windows), NVD parsing/pagination/retry, the CVE List v5 provider,
+the published-database publish/pull flow (round trips, deltas, tampering, hostile redirects),
 the search pipeline, SSRF/redirect/size/multi-address security, report
 validity/escaping, the end-to-end scan workflow, and search performance (index
 usage, batching). All HTTP and provider responses are mocked, and an autouse

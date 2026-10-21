@@ -47,7 +47,7 @@ class Config:
     cache_ttl_seconds: int = 3600
 
     # Update behaviour
-    default_source: str = "nvd"
+    default_source: str = "repo"   # "repo" = pull the published database; "nvd" = query NVD directly
     logging_level: str = "WARNING"
 
     # ---- validation -------------------------------------------------------

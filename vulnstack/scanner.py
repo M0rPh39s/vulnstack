@@ -111,7 +111,7 @@ def _db_info(db: Database, cfg: Config, source: str) -> DatabaseInfo:
     if not db.is_initialized():
         return DatabaseInfo(initialized=False, path=str(db.path))
     total = db.count_vulnerabilities()
-    last_sync = db.last_successful_sync(source)
+    last_sync = db.last_successful_sync()
     stale = False
     stale_days: float | None = None
     if last_sync:

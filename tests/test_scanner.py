@@ -146,9 +146,7 @@ def test_truncated_response_warns(patched_http, seeded_db):
 
 def test_stale_database_warning(patched_http, tmp_db):
     from tests.conftest import make_vuln
-    from vulnstack.cve.updater import Updater
-    from tests.test_cve_updater import FakeProvider
-    Updater(tmp_db, FakeProvider([make_vuln("CVE-2020-0001", version="1.0")], latest="2020-01-01T00:00:00")).run()
+    tmp_db.upsert_vulnerabilities([make_vuln("CVE-2020-0001", version="1.0")])
     tmp_db.record_source_sync("nvd", status="success", source_modified="2020-01-01T00:00:00",
                               sync_time="2020-01-01T00:00:00+00:00")
     patched_http(make_response(headers={"Server": "nginx/1.18.0"}))
