@@ -1,0 +1,31 @@
+# Example VulnStack configuration.
+#
+# Copy to ~/.config/vulnstack/config.toml (or point VULNSTACK_CONFIG at it) and
+# edit as needed. All keys are optional; omitted keys fall back to the built-in
+# defaults. Environment variables and CLI options override these values.
+#
+# Precedence (lowest to highest):
+#   defaults < this file < environment variables < CLI options
+#
+# Secrets (e.g. NVD_API_KEY) are NOT configured here — they are read only from
+# the environment and never written to disk by VulnStack.
+
+# Networking / scanning
+timeout = 15.0                 # request timeout in seconds
+max_redirects = 5              # maximum validated redirects to follow
+max_response_bytes = 5242880   # 5 MiB response-body cap
+# user_agent = "VulnStack/0.1 (+https://github.com/m0rph39s/vulnstack)"
+allow_private_targets = false  # block private/loopback targets (SSRF protection)
+
+# Reporting
+default_format = "terminal"    # terminal | json | html
+# output_dir = "/home/you/vulnstack-reports"
+
+# Storage
+# database_path = "/home/you/.local/share/vulnstack/vulnstack.db"
+# cache_dir = "/home/you/.cache/vulnstack"
+cache_ttl_seconds = 3600
+
+# Updates / logging
+default_source = "nvd"         # nvd | cvelist
+logging_level = "WARNING"      # DEBUG | INFO | WARNING | ERROR

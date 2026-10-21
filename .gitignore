@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# VulnStack local state (never commit generated DBs, caches, reports)
+*.db
+*.db-wal
+*.db-shm
+vulnstack.db
+*.sqlite
+*.sqlite3
+report.json
+report.html
+reports/*.json
+reports/*.html
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
