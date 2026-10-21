@@ -13,6 +13,17 @@ from vulnstack.cve.models import AffectedProduct, Reference, Vulnerability, Vers
 from vulnstack.http_client import HttpResponse
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Fail loudly if any test tries to open a real socket connection."""
+    import socket
+
+    def blocked(self, *args, **kwargs):
+        raise AssertionError(f"test attempted a real network connection: {args!r}")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+
+
 @pytest.fixture
 def tmp_db(tmp_path):
     db = Database(tmp_path / "test.db")

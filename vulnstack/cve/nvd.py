@@ -35,7 +35,9 @@ from vulnstack.logging_config import get_logger
 log = get_logger("nvd")
 
 API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-PAGE_SIZE = 2000
+# NVD serves large pages very slowly (a 2000-record page can exceed 90 s), so
+# keep pages small enough to finish well inside the read timeout.
+PAGE_SIZE = 200
 MAX_WINDOW_DAYS = 120  # NVD limit for a single date range
 
 
@@ -175,7 +177,7 @@ class NvdProvider(Provider):
         self,
         *,
         api_key: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         session: requests.Session | None = None,
         max_retries: int = 4,
     ) -> None:

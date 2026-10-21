@@ -51,6 +51,10 @@ class HttpError(Exception):
     """Raised for network/HTTP failures during a scan."""
 
 
+class HttpConnectError(HttpError):
+    """TCP connect failed for one pinned address (another may still work)."""
+
+
 @dataclass
 class HttpResponse:
     url: str
@@ -97,11 +101,13 @@ def _resolve(host: str) -> list[str]:
     return ips
 
 
-def validate_url(url: str, *, allow_private: bool = False) -> tuple[str, str]:
+def validate_url_all(url: str, *, allow_private: bool = False) -> tuple[str, list[str]]:
     """Validate a URL for scheme, host and resolved-IP safety.
 
-    Returns ``(host, pinned_ip)``. Raises :class:`ScanSafetyError` on any
-    policy violation.
+    Returns ``(host, ips)`` where *every* address is validated and IPv4
+    addresses come first. Raises :class:`ScanSafetyError` on any policy
+    violation. All resolved addresses must be allowed — a host that resolves
+    to even one blocked address is refused.
     """
     parsed = urlparse(url)
     if parsed.scheme.lower() not in ALLOWED_SCHEMES:
@@ -118,8 +124,9 @@ def validate_url(url: str, *, allow_private: bool = False) -> tuple[str, str]:
     except ValueError:
         candidate_ips = _resolve(host)
 
+    candidate_ips = sorted(candidate_ips, key=lambda ip: (":" in ip, ip))
     if allow_private:
-        return host, candidate_ips[0]
+        return host, candidate_ips
 
     safe_ips = [ip for ip in candidate_ips if is_public_ip(ip)]
     if not safe_ips:
@@ -133,7 +140,13 @@ def validate_url(url: str, *, allow_private: bool = False) -> tuple[str, str]:
             f"host {host!r} resolves to both public and blocked addresses "
             f"({', '.join(sorted(blocked))}); refusing to connect (possible DNS rebinding)"
         )
-    return host, safe_ips[0]
+    return host, safe_ips
+
+
+def validate_url(url: str, *, allow_private: bool = False) -> tuple[str, str]:
+    """Like :func:`validate_url_all` but returns the preferred single address."""
+    host, ips = validate_url_all(url, allow_private=allow_private)
+    return host, ips[0]
 
 
 _resolver_lock = threading.Lock()
@@ -192,8 +205,8 @@ class SafeHttpClient:
         history: list[str] = []
         current = url
         for hop in range(self.max_redirects + 1):
-            host, pinned = validate_url(current, allow_private=self.allow_private)
-            resp = self._single_get(current, host, pinned)
+            host, ips = validate_url_all(current, allow_private=self.allow_private)
+            resp = self._get_first_reachable(current, host, ips)
             if resp.status_code in _REDIRECT_STATUSES:
                 location = resp.headers.get("Location")
                 if not location:
@@ -213,6 +226,24 @@ class SafeHttpClient:
             resp.history = history
             return resp
         raise HttpError("redirect handling terminated unexpectedly")
+
+    def _get_first_reachable(self, url: str, host: str, ips: list[str]) -> HttpResponse:
+        """Try each already-validated address until one accepts a connection.
+
+        Only connection-level failures fall through to the next address (e.g.
+        an IPv6 address on a host with no IPv6 route). TLS, timeout-after-
+        connect and HTTP errors are reported immediately, and no address
+        outside the validated set is ever used.
+        """
+        last: HttpConnectError | None = None
+        for ip in ips:
+            try:
+                return self._single_get(url, host, ip)
+            except HttpConnectError as exc:
+                log.debug("connect to %s (%s) failed: %s", host, ip, exc)
+                last = exc
+        assert last is not None
+        raise last
 
     def _single_get(self, url: str, host: str, pinned_ip: str) -> HttpResponse:
         session = requests.Session()
@@ -239,8 +270,12 @@ class SafeHttpClient:
                         break
         except requests.exceptions.SSLError as exc:
             raise HttpError(f"TLS verification failed for {url}: {exc}") from exc
+        except requests.exceptions.ConnectTimeout as exc:
+            raise HttpConnectError(f"connecting to {url} timed out after {self.timeout}s") from exc
         except requests.exceptions.Timeout as exc:
             raise HttpError(f"request to {url} timed out after {self.timeout}s") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise HttpConnectError(f"request to {url} failed: {exc}") from exc
         except requests.exceptions.RequestException as exc:
             raise HttpError(f"request to {url} failed: {exc}") from exc
 

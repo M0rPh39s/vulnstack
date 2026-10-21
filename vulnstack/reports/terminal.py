@@ -126,7 +126,9 @@ def render(result: ScanResult, console: Console | None = None, *, show_unmatched
             table.add_row(f.cve_id, _severity_text(f.severity), cvss, product, detail)
         console.print(table)
 
-    if not any_shown:
+    # Only claim "no candidates" when a correlation search actually ran (not
+    # under --no-cve and not against an empty database).
+    if not any_shown and result.search_report is not None:
         console.print("[green]No candidate CVEs found in the local database for the detected technologies.[/green]")
 
     for w in result.warnings:
@@ -146,10 +148,9 @@ def _render_summary(result: ScanResult, console: Console) -> None:
     counts = summary["findings_by_classification"]
     if counts:
         matched = counts.get("MATCHED_AFFECTED_RANGE", 0)
-        console.print(
-            f"  Confirmed version matches: [bold red]{matched}[/bold red]  ·  "
-            + "  ".join(f"{k}: {v}" for k, v in counts.items() if k != "MATCHED_AFFECTED_RANGE")
-        )
+        parts = [f"Confirmed version matches: [bold red]{matched}[/bold red]"]
+        parts += [f"{k}: {v}" for k, v in counts.items() if k != "MATCHED_AFFECTED_RANGE"]
+        console.print("  " + "  ·  ".join(parts))
     if db and db.initialized:
         freshness = db.last_successful_sync or "never"
         stale = " [yellow](possibly outdated)[/yellow]" if db.stale else ""

@@ -21,6 +21,7 @@ from vulnstack.cve.models import (
     Vulnerability,
     VersionRange,
 )
+from vulnstack.cve.nvd import _parse_cpe
 from vulnstack.cve.providers import Provider, ProviderError, ProgressCallback, register
 from vulnstack.logging_config import get_logger
 
@@ -55,6 +56,8 @@ def _parse_versions(affected: dict) -> tuple[str | None, list[VersionRange]]:
 
 def parse_record(record: dict) -> Vulnerability | None:
     """Normalize one CVE 5.x record into a Vulnerability."""
+    if not isinstance(record, dict):
+        return None
     meta = record.get("cveMetadata", {})
     cve_id = meta.get("cveId")
     if not cve_id:
@@ -100,12 +103,16 @@ def parse_record(record: dict) -> Vulnerability | None:
         product = aff.get("product")
         concrete, ranges = _parse_versions(aff)
         cpes = aff.get("cpes") or []
+        # Prefer the record's own CPE: display names ("Apache Software
+        # Foundation" / "Apache HTTP Server") do not equal CPE vendor/product
+        # fields ("apache" / "http_server") and would never match a scan.
+        cpe_vendor, cpe_product, _ = _parse_cpe(cpes[0]) if cpes else (None, None, None)
         affected_products.append(
             AffectedProduct(
                 vendor=vendor,
                 product=product,
-                cpe_vendor=(vendor or "").lower().replace(" ", "_") or None,
-                cpe_product=(product or "").lower().replace(" ", "_") or None,
+                cpe_vendor=cpe_vendor or (vendor or "").lower().replace(" ", "_") or None,
+                cpe_product=cpe_product or (product or "").lower().replace(" ", "_") or None,
                 cpe23=cpes[0] if cpes else None,
                 version=concrete,
                 ranges=ranges,
@@ -159,6 +166,9 @@ class CveListProvider(Provider):
         full: bool,
         progress: ProgressCallback | None = None,
     ) -> Iterator[Vulnerability]:
+        # A local tree is always read in full: every file must be opened to
+        # learn its dateUpdated anyway, and a first run should import the whole
+        # mirror, so ``modified_since`` is deliberately not applied here.
         count = 0
         for file in self._iter_files():
             try:
@@ -168,6 +178,7 @@ class CveListProvider(Provider):
                 continue
             vuln = parse_record(record)
             if vuln is None:
+                log.warning("Skipping %s: not a CVE record", file)
                 continue
             if vuln.last_modified and (self._latest is None or vuln.last_modified > self._latest):
                 self._latest = vuln.last_modified

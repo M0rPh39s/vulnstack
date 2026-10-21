@@ -5,6 +5,7 @@ import pytest
 from vulnstack import http_client
 from vulnstack.http_client import (
     HttpError,
+    HttpResponse,
     SafeHttpClient,
     ScanSafetyError,
     is_public_ip,
@@ -152,3 +153,121 @@ def test_response_truncation(monkeypatch):
     assert resp.truncated is True
     assert len(resp.text) <= 2048
     assert resp.headers["Server"] == "nginx/1.18.0"
+
+
+# ---- multi-address handling (IPv6/IPv4 fallback) ---------------------------
+
+def test_validate_orders_ipv4_before_ipv6(monkeypatch):
+    from vulnstack import http_client
+    monkeypatch.setattr(http_client, "_resolve", lambda host: ["2606:4700::1111", "1.1.1.1", "8.8.8.8"])
+    host, ips = http_client.validate_url_all("https://example.com/")
+    assert ips == ["1.1.1.1", "8.8.8.8", "2606:4700::1111"]
+    assert http_client.validate_url("https://example.com/") == ("example.com", "1.1.1.1")
+
+
+@pytest.mark.parametrize("resolved", [
+    ["8.8.8.8", "10.0.0.5"],            # public first, private second
+    ["2606:4700::1111", "127.0.0.1"],
+    ["1.1.1.1", "::1"],
+    ["1.1.1.1", "169.254.169.254"],
+])
+def test_any_blocked_address_refuses_the_whole_host(monkeypatch, resolved):
+    from vulnstack import http_client
+    monkeypatch.setattr(http_client, "_resolve", lambda host: resolved)
+    with pytest.raises(ScanSafetyError):
+        http_client.validate_url_all("https://example.com/")
+
+
+def _client_with_ips(monkeypatch, ips, single_get):
+    from vulnstack import http_client
+    monkeypatch.setattr(http_client, "validate_url_all", lambda url, allow_private=False: ("example.com", ips))
+    client = SafeHttpClient()
+    monkeypatch.setattr(client, "_single_get", single_get)
+    return client
+
+
+def test_falls_back_to_next_validated_ip_on_connect_failure(monkeypatch):
+    from vulnstack.http_client import HttpConnectError
+    tried = []
+
+    def single_get(url, host, ip):
+        tried.append(ip)
+        if ":" in ip:
+            raise HttpConnectError("Network is unreachable")
+        return HttpResponse(url=url, status_code=200, headers={}, text="ok", content_length=2)
+
+    client = _client_with_ips(monkeypatch, ["2606:4700::1111", "1.1.1.1"], single_get)
+    assert client.get("https://example.com/").text == "ok"
+    assert tried == ["2606:4700::1111", "1.1.1.1"]
+
+
+def test_all_addresses_unreachable_raises_last_connect_error(monkeypatch):
+    from vulnstack.http_client import HttpConnectError
+
+    def single_get(url, host, ip):
+        raise HttpConnectError(f"no route to {ip}")
+
+    client = _client_with_ips(monkeypatch, ["1.1.1.1", "8.8.8.8"], single_get)
+    with pytest.raises(HttpConnectError, match="8.8.8.8"):
+        client.get("https://example.com/")
+
+
+def test_non_connect_errors_do_not_fall_through(monkeypatch):
+    tried = []
+
+    def single_get(url, host, ip):
+        tried.append(ip)
+        raise HttpError("TLS verification failed")
+
+    client = _client_with_ips(monkeypatch, ["1.1.1.1", "8.8.8.8"], single_get)
+    with pytest.raises(HttpError, match="TLS"):
+        client.get("https://example.com/")
+    assert tried == ["1.1.1.1"]  # a TLS failure is never retried on another address
+
+
+def test_requests_connection_errors_map_to_connect_error(monkeypatch):
+    import requests
+    from vulnstack.http_client import HttpConnectError
+
+    def boom(self, *a, **k):
+        raise requests.exceptions.ConnectionError("Network is unreachable")
+
+    monkeypatch.setattr(requests.Session, "get", boom)
+    with pytest.raises(HttpConnectError):
+        SafeHttpClient()._single_get("https://example.com/", "example.com", "1.1.1.1")
+
+
+def test_connect_timeout_maps_to_connect_error_but_read_timeout_does_not(monkeypatch):
+    import requests
+    from vulnstack.http_client import HttpConnectError
+
+    def make(exc):
+        def boom(self, *a, **k):
+            raise exc
+        return boom
+
+    monkeypatch.setattr(requests.Session, "get", make(requests.exceptions.ConnectTimeout("t")))
+    with pytest.raises(HttpConnectError):
+        SafeHttpClient()._single_get("https://example.com/", "example.com", "1.1.1.1")
+
+    monkeypatch.setattr(requests.Session, "get", make(requests.exceptions.ReadTimeout("t")))
+    with pytest.raises(HttpError) as ei:
+        SafeHttpClient()._single_get("https://example.com/", "example.com", "1.1.1.1")
+    assert not isinstance(ei.value, HttpConnectError)
+
+
+def test_tls_errors_stay_plain_http_errors(monkeypatch):
+    import requests
+    from vulnstack.http_client import HttpConnectError
+
+    def boom(self, *a, **k):
+        raise requests.exceptions.SSLError("certificate verify failed")
+
+    monkeypatch.setattr(requests.Session, "get", boom)
+    with pytest.raises(HttpError, match="TLS verification failed") as ei:
+        SafeHttpClient()._single_get("https://example.com/", "example.com", "1.1.1.1")
+    assert not isinstance(ei.value, HttpConnectError)
+
+
+def test_tls_verification_is_on_by_default():
+    assert SafeHttpClient().verify_tls is True

@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also show CVEs whose version did not match")
     p_scan.add_argument("--allow-private", action="store_true",
                         help="allow scanning private/loopback targets (unsafe; off by default)")
-    p_scan.add_argument("-v", "--verbose", action="store_true")
+    p_scan.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     # technologies
     p_tech = sub.add_parser("technologies", help="fingerprint technologies only")
@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_tech.add_argument("--output", help="write the report to a file")
     p_tech.add_argument("--timeout", type=float, help="request timeout in seconds")
     p_tech.add_argument("--allow-private", action="store_true")
-    p_tech.add_argument("-v", "--verbose", action="store_true")
+    p_tech.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     # cve
     p_cve = sub.add_parser("cve", help="search/show CVEs in the local database")
@@ -82,10 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cve_search = cve_sub.add_parser("search", help="free-text search the local database")
     p_cve_search.add_argument("query", help="search term")
     p_cve_search.add_argument("--limit", type=int, default=25, help="max results (default 25)")
-    p_cve_search.add_argument("-v", "--verbose", action="store_true")
+    p_cve_search.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_cve_show = cve_sub.add_parser("show", help="show a single CVE record")
     p_cve_show.add_argument("cve_id", help="e.g. CVE-2021-41773")
-    p_cve_show.add_argument("-v", "--verbose", action="store_true")
+    p_cve_show.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     # db
     p_db = sub.add_parser("db", help="manage the local vulnerability database")
@@ -97,26 +97,26 @@ def build_parser() -> argparse.ArgumentParser:
                              help="window for the first incremental run (default 30)")
     p_db_update.add_argument("--cvelist-path", default=None,
                              help="local path for the 'cvelist' source")
-    p_db_update.add_argument("-v", "--verbose", action="store_true")
+    p_db_update.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_db_status = db_sub.add_parser("status", help="show database status")
-    p_db_status.add_argument("-v", "--verbose", action="store_true")
+    p_db_status.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_db_stats = db_sub.add_parser("stats", help="show database statistics")
-    p_db_stats.add_argument("-v", "--verbose", action="store_true")
+    p_db_stats.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
     p_db_clear = db_sub.add_parser("clear", help="delete all local vulnerability data")
     p_db_clear.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p_db_clear.add_argument("-v", "--verbose", action="store_true")
+    p_db_clear.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     # config
     p_config = sub.add_parser("config", help="configuration")
     cfg_sub = p_config.add_subparsers(dest="config_command", metavar="<subcommand>")
     p_cfg_show = cfg_sub.add_parser("show", help="show effective configuration")
-    p_cfg_show.add_argument("-v", "--verbose", action="store_true")
+    p_cfg_show.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     # cache
     p_cache = sub.add_parser("cache", help="manage the scan cache")
     cache_sub = p_cache.add_subparsers(dest="cache_command", metavar="<subcommand>")
     p_cache_clear = cache_sub.add_parser("clear", help="clear the cache")
-    p_cache_clear.add_argument("-v", "--verbose", action="store_true")
+    p_cache_clear.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     return parser
 
@@ -339,7 +339,8 @@ def cmd_db_status(args: argparse.Namespace, cfg: config_mod.Config, console: Con
     if sources:
         for s in sources:
             table.add_row(f"Source: {s['name']}", "")
-            table.add_row("  Last successful sync", s["last_source_modified"] or s["last_sync_time"] or "never")
+            table.add_row("  Last successful sync", s["last_sync_time"] or "never")
+            table.add_row("  Newest record synced", s["last_source_modified"] or "never")
             table.add_row("  Last status", s["last_status"] or "—")
             if s["last_error"]:
                 table.add_row("  Last error", s["last_error"])
@@ -438,6 +439,15 @@ _DISPATCH = {
 }
 
 
+def _missing_subcommand(parser: argparse.ArgumentParser, command: str) -> int:
+    """Show the command's help and report a usage error (exit 2, not 0)."""
+    try:
+        parser.parse_args([command, "--help"])
+    except SystemExit:
+        pass
+    return EXIT_USAGE
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -465,8 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_cve_search(args, cfg, console)
             if args.cve_command == "show":
                 return cmd_cve_show(args, cfg, console)
-            parser.parse_args([args.command, "--help"])
-            return EXIT_USAGE
+            return _missing_subcommand(parser, args.command)
         if args.command == "db":
             if args.db_command == "update":
                 return cmd_db_update(args, cfg, console)
@@ -476,18 +485,15 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_db_stats(args, cfg, console)
             if args.db_command == "clear":
                 return cmd_db_clear(args, cfg, console)
-            parser.parse_args([args.command, "--help"])
-            return EXIT_USAGE
+            return _missing_subcommand(parser, args.command)
         if args.command == "config":
             if args.config_command == "show":
                 return cmd_config_show(args, cfg, console)
-            parser.parse_args([args.command, "--help"])
-            return EXIT_USAGE
+            return _missing_subcommand(parser, args.command)
         if args.command == "cache":
             if args.cache_command == "clear":
                 return cmd_cache_clear(args, cfg, console)
-            parser.parse_args([args.command, "--help"])
-            return EXIT_USAGE
+            return _missing_subcommand(parser, args.command)
     except KeyboardInterrupt:
         _err_console.print("\n[yellow]Interrupted.[/yellow]")
         return EXIT_ERROR

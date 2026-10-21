@@ -37,13 +37,47 @@ CVE IDs.
 - **Persistent local SQLite CVE database** with a versioned schema, foreign
   keys, indexes and WAL mode. It is a dataset, never executed as code.
 - **Incremental + safe full updates** from NVD (with optional CVE List v5
-  ingestion), respecting rate limits, retries and date-window boundaries.
+  ingestion), respecting rate limits, retries and date-window boundaries. A
+  failed sync never advances the watermark and never loses the previous one.
 - **Safe, non-intrusive scanning**: strict SSRF protection, validated
   redirects, IP pinning against DNS rebinding, TLS verification, size/time
   caps. No exploitation, ever.
 - **Terminal, JSON and HTML reports** that distinguish confirmed version
   matches from uncertain candidates and never imply exploitability.
 - **Offline operation** once the database is populated.
+
+## Supported technologies
+
+Fingerprints are plain data in `vulnstack/fingerprints.py`; each maps to a
+CPE vendor/product in `vulnstack/product_mapping.py` (a test enforces that
+every fingerprint has a mapping and a test case).
+
+| Category | Technologies |
+|----------|--------------|
+| Web servers / proxies | Apache HTTP Server, Nginx, Microsoft IIS, LiteSpeed, OpenLiteSpeed, Apache Tomcat, Eclipse Jetty, Caddy, Lighttpd, OpenResty, Gunicorn, Tornado, Phusion Passenger, Varnish, Cloudflare¹ |
+| Libraries | OpenSSL (from the `Server` header) |
+| Languages / runtimes | PHP, ASP.NET, Node.js |
+| CMS / platforms | WordPress, Drupal, Joomla, Magento, PrestaShop, TYPO3, Ghost, MediaWiki, Moodle, phpBB, OpenCart, Craft CMS, DokuWiki, Discourse, Strapi |
+| Web frameworks | Laravel, Django, Flask, Express, Ruby on Rails, Symfony, CodeIgniter, Next.js, ASP.NET MVC |
+| JavaScript / CSS (client-side) | jQuery, jQuery UI, Bootstrap, React, Angular, AngularJS, Vue.js, Lodash, Moment.js, Underscore.js, Handlebars, Axios, TinyMCE, CKEditor, DataTables, Highcharts, Prototype, Modernizr, Backbone.js, Knockout |
+
+¹ Cloudflare is an infrastructure hint only; it has no CVE product mapping and
+is reported as "fingerprinted, but not correlated".
+
+Versions are extracted from `Server`/`X-Powered-By`-style headers, meta
+generator tags, and versioned asset URLs (`lib-1.2.3.min.js`, CDN paths such as
+`/ajax/libs/lib/1.2.3/` and `lib@1.2.3/`). Most cookie-, HTML- and
+framework-based signatures identify the product but **cannot** reveal a
+version, so those are reported with version "unknown" and correlated as
+`VERSION_UNKNOWN` (verify), never as a confirmed match.
+
+**Not supported** (by design or not yet): active probing (no requests for
+`/wp-login.php`, `/readme.html`, favicon hashes, etc.); executing JavaScript;
+crawling beyond the one requested page and its redirects; SaaS platforms with
+no meaningful CPE (Shopify, Wix, Squarespace); WAF/CDN vendors other than
+Cloudflare and Varnish; Spring, Struts and other JVM frameworks that leave no
+reliable passive HTTP signature; Concrete CMS (its CPE vendor changed over
+time, so it is left out rather than guessed); and plugin/theme-level detection.
 
 ## Supported platforms
 
@@ -126,7 +160,7 @@ vulnstack cache clear
 |------|---------|
 | `0`  | Operation completed successfully. **A scan that finds vulnerabilities still exits `0`** — findings are a result, not an error. |
 | `1`  | Runtime error (invalid/blocked target, network failure, provider error, database problem). |
-| `2`  | Invalid command-line usage. |
+| `2`  | Invalid command-line usage, including a command group with no subcommand (`vulnstack db`). |
 
 Stack traces are shown only with `--verbose`; otherwise a concise error message
 is printed. Secrets are never printed.
@@ -159,7 +193,8 @@ The database lives at `~/.local/share/vulnstack/vulnstack.db` by default
   the last successful synchronization (with a small overlap so boundary
   records are not skipped). On the very first run with no prior sync it fetches
   a recent window (`--bootstrap-days`, default 30) and tells you so; run a full
-  sync for the complete dataset.
+  sync for the complete dataset. The window is whole days, and a busy day is
+  large: one day of NVD modifications was ~3,900 records when measured.
 - **`vulnstack db update --full`** — full synchronization/rebuild. This can
   download the entire NVD corpus (hundreds of thousands of records): expect
   significant **network, time and disk** usage. The rebuild is written to a
@@ -169,7 +204,10 @@ The database lives at `~/.local/share/vulnstack/vulnstack.db` by default
   `nvd`; `cvelist` is also available, see below).
 
 NVD rate limits are respected automatically (5 requests / 30 s without a key,
-50 with one). Set an API key to go faster:
+50 with one). NVD serves large pages slowly, so VulnStack requests 200 records
+per page with a 60 s read timeout (2000-record pages timed out in testing);
+expect a one-day window to take a few minutes without a key. Set an API key to
+go faster:
 
 ```bash
 export NVD_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -186,6 +224,12 @@ vulnstack db status   # location, schema version, counts, sources, last sync, si
 vulnstack db stats    # CVE counts by severity and by year
 vulnstack db clear    # delete all vulnerability data (asks for confirmation)
 ```
+
+In `db status`, **Last successful sync** is the wall-clock time of the last
+sync that succeeded (a failed attempt never overwrites it; the failure is shown
+under *Last status*/*Last error*), and **Newest record synced** is the incremental
+watermark. Scan staleness ("possibly outdated" after 14 days) is judged from the
+former.
 
 `db clear` removes vulnerability records **and** cached sync metadata but keeps
 the schema. It never touches your configuration or cache files, and is never
@@ -237,6 +281,11 @@ Each result is given an explicit classification:
   vulnstack db update --source cvelist --cvelist-path /path/to/cvelistV5
   # or: export VULNSTACK_CVELIST_PATH=/path/to/cvelistV5
   ```
+  A local tree is always read in full (the `--bootstrap-days` window does not
+  apply). Product matching uses the record's own `cpes` when present; for
+  records that carry none, the vendor/product *names* are lower-cased into a
+  best-effort CPE guess that often will not match, so such CVEs may be missed.
+  Unreadable files and JSON that is not a CVE record are skipped with a warning.
 
 Each record stores its originating source. Providers are abstracted so new
 trusted sources can be added without changing the database or search layers.
@@ -284,9 +333,10 @@ displays effective values and reports whether `NVD_API_KEY` is set (redacted).
 
 ## Cache
 
-A scan-side cache lives at `~/.cache/vulnstack/` and is distinct from the CVE
-database. Clear it with `vulnstack cache clear`. Cached data never overrides
-newer database records and never stores secrets.
+A small on-disk cache module (`~/.cache/vulnstack/`, TTL-based) exists and
+`vulnstack cache clear` empties it, but **the scan workflow does not currently
+read or write it**: every scan fetches the target fresh. It is distinct from the
+CVE database and never stores secrets.
 
 ## Security considerations
 
@@ -298,8 +348,14 @@ VulnStack scans conservatively and non-intrusively:
   connecting. Loopback, private, link-local, unspecified, multicast and other
   reserved ranges are blocked by default (IPv4 and IPv6, including IPv4-mapped
   IPv6).
-- The connection is pinned to the validated IP for the duration of the request
-  to defeat DNS rebinding and validation-to-connection races. Every redirect
+- The connection is pinned to a validated IP for the duration of the request
+  to defeat DNS rebinding and validation-to-connection races. If a host has
+  several addresses, **all** must be public (one blocked address refuses the
+  host), IPv4 is tried first, and if a connection cannot be established
+  (e.g. an IPv6 address on a host with no IPv6 route) the next already-validated
+  address is tried. Only connection failures fall through: TLS, HTTP and
+  post-connect timeout errors are reported immediately, and an address outside
+  the validated set is never used. Every redirect
   destination is re-validated with the same rules; redirects cannot escape the
   IP policy and are bounded.
 - TLS certificate verification is always on and never disabled automatically.
@@ -319,6 +375,9 @@ VulnStack scans conservatively and non-intrusively:
   it updated. Records with no structured affected-version data are surfaced as
   "verify", not confirmed.
 - A full NVD synchronization is large and slow without an API key.
+- Fingerprinting reports what the response *claims*; a version string is never
+  verified, and distro back-ported fixes (e.g. Debian's patched `Apache/2.4.x`)
+  are not accounted for, so a "match" can be a false positive.
 - VulnStack reports *potential* exposure, never confirmed exploitability.
 
 ## Troubleshooting
@@ -342,6 +401,7 @@ pip install -e ".[dev]"
 Project layout:
 
 ```
+.github/workflows/    CI (pytest on Python 3.11, 3.12, 3.13)
 vulnstack/            cli, config, http_client, fingerprinting, scanner, ...
 vulnstack/cve/        models, database, migrations, providers, nvd, cve_json,
                       updater, search
@@ -356,13 +416,26 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite (117 tests) covers CLI behaviour and exit codes, fingerprinting,
-product mapping, version comparison, the database (migrations, upserts,
-transactions, foreign keys, injection-safety), the update engine (incremental,
-full, failure/recovery, dedup, date windows), NVD parsing/pagination/retry, the
-search pipeline, SSRF/redirect/size security, report validity/escaping, the
-end-to-end scan workflow, and search performance (index usage, batching).
-Tests mock all HTTP and provider responses — no live internet is required.
+The suite (324 tests, ~95% line coverage) covers CLI behaviour, exit codes and
+error paths, fingerprinting (one test per catalogue signature plus
+false-positive regressions), product mapping, version comparison, the database
+(migrations, upserts, transactions, foreign keys, injection-safety), the update
+engine (incremental, full, mid-stream failure/recovery, watermark handling,
+dedup, date windows), NVD parsing/pagination/retry, the CVE List v5 provider,
+the search pipeline, SSRF/redirect/size/multi-address security, report
+validity/escaping, the end-to-end scan workflow, and search performance (index
+usage, batching). All HTTP and provider responses are mocked, and an autouse
+fixture makes any attempt to open a real socket fail the test, so no live
+internet is required.
+
+```bash
+pytest --cov=vulnstack --cov-report=term-missing
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` installs the package (`pip install -e ".[dev]"`) and
+runs `pytest` on every push and pull request across Python 3.11, 3.12 and 3.13.
 
 ## License
 

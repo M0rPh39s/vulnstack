@@ -98,7 +98,10 @@ class Updater:
         source_row = self.db.get_source(self.provider.name)
         watermark = None
         bootstrap = False
-        if source_row and source_row["last_status"] == "success" and source_row["last_source_modified"]:
+        # The watermark is preserved across failed syncs (see
+        # Database.record_source_sync), so a transient failure must not reset
+        # the next run to a bootstrap window that could skip older records.
+        if source_row and source_row["last_source_modified"]:
             watermark = _parse_iso(source_row["last_source_modified"])
         if watermark is not None:
             modified_since = watermark - WATERMARK_OVERLAP

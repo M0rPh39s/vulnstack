@@ -100,3 +100,67 @@ def test_scan_result_json_serializable(patched_http, seeded_db):
     result = scanner.scan("https://example.com", config=cfg, database=seeded_db)
     text = json_report.render(result)
     json.loads(text)  # does not raise
+
+
+# ---- new technologies flow through the full pipeline ----------------------
+
+def test_new_signature_maps_to_cve_candidate(patched_http, tmp_db):
+    """Fingerprint -> alias/CPE mapping -> DB candidate, for a catalogue addition."""
+    from tests.conftest import make_vuln
+    from vulnstack.cve.models import VersionRange
+    tmp_db.upsert_vulnerabilities([make_vuln(
+        "CVE-2024-5000", cpe_vendor="apache", cpe_product="tomcat",
+        ranges=[VersionRange("9.0.0", "including", "9.0.60", "excluding")])])
+    patched_http(make_response(headers={"Server": "Apache Tomcat/9.0.50"}))
+    result = scanner.scan("https://example.com", config=_cfg(tmp_db.path), database=tmp_db)
+    assert [f.cve_id for f in result.findings if f.classification == Classification.MATCHED_AFFECTED_RANGE] == ["CVE-2024-5000"]
+
+
+def test_tomcat_does_not_pull_in_apache_httpd_cves(patched_http, seeded_db):
+    patched_http(make_response(headers={"Server": "Apache-Coyote/1.1"}))
+    result = scanner.scan("https://example.com", config=_cfg(seeded_db.path), database=seeded_db)
+    assert "Apache HTTP Server" not in {t.name for t in result.technologies}
+    assert not any(f.cve_id == "CVE-2021-41773" for f in result.findings)
+
+
+def test_connection_failure_is_error_result(monkeypatch, seeded_db):
+    from vulnstack.http_client import HttpConnectError
+    monkeypatch.setattr(scanner, "validate_url", lambda url, allow_private=False: ("example.com", "8.8.8.8"))
+
+    class Boom:
+        def __init__(self, **kw): pass
+        def get(self, url): raise HttpConnectError("Network is unreachable")
+
+    monkeypatch.setattr(scanner, "SafeHttpClient", Boom)
+    result = scanner.scan("https://example.com", config=_cfg(seeded_db.path), database=seeded_db)
+    assert result.status == "error" and "unreachable" in result.errors[0]
+
+
+def test_truncated_response_warns(patched_http, seeded_db):
+    resp = make_response(headers={"Server": "nginx/1.18.0"})
+    resp.truncated = True
+    patched_http(resp)
+    result = scanner.scan("https://example.com", config=_cfg(seeded_db.path), database=seeded_db)
+    assert any("truncated" in w for w in result.warnings)
+
+
+def test_stale_database_warning(patched_http, tmp_db):
+    from tests.conftest import make_vuln
+    from vulnstack.cve.updater import Updater
+    from tests.test_cve_updater import FakeProvider
+    Updater(tmp_db, FakeProvider([make_vuln("CVE-2020-0001", version="1.0")], latest="2020-01-01T00:00:00")).run()
+    tmp_db.record_source_sync("nvd", status="success", source_modified="2020-01-01T00:00:00",
+                              sync_time="2020-01-01T00:00:00+00:00")
+    patched_http(make_response(headers={"Server": "nginx/1.18.0"}))
+    result = scanner.scan("https://example.com", config=_cfg(tmp_db.path), database=tmp_db)
+    assert result.database.stale is True
+    assert any("outdated" in w for w in result.warnings)
+
+
+def test_fresh_sync_with_old_newest_record_is_not_stale(patched_http, tmp_db):
+    from tests.conftest import make_vuln
+    tmp_db.upsert_vulnerabilities([make_vuln("CVE-2020-0001", version="1.0")])
+    tmp_db.record_source_sync("nvd", status="success", source_modified="2020-01-01T00:00:00")
+    patched_http(make_response(headers={"Server": "nginx/1.18.0"}))
+    result = scanner.scan("https://example.com", config=_cfg(tmp_db.path), database=tmp_db)
+    assert result.database.stale is False

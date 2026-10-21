@@ -111,12 +111,17 @@ class Database:
         conn = self.connect()
         sync_time = sync_time or _now()
         existing = conn.execute(
-            "SELECT last_source_modified FROM data_sources WHERE name=?", (name,)
+            "SELECT last_source_modified, last_sync_time FROM data_sources WHERE name=?",
+            (name,),
         ).fetchone()
         # On failure keep the previous watermark so we do not advance past
         # records we never ingested.
         if source_modified is None and existing is not None:
             source_modified = existing[0]
+        # last_sync_time always means "last *successful* sync": a failed
+        # attempt leaves it untouched (NULL if there never was a success).
+        if status != "success":
+            sync_time = existing[1] if existing is not None else None
         conn.execute(
             """
             INSERT INTO data_sources(name, last_sync_time, last_source_modified, last_status, last_error)
@@ -140,10 +145,9 @@ class Database:
         return list(conn.execute("SELECT * FROM data_sources ORDER BY name"))
 
     def last_successful_sync(self, name: str) -> str | None:
+        """Wall-clock time of the last successful sync, or None if never."""
         row = self.get_source(name)
-        if row and row["last_status"] == "success":
-            return row["last_source_modified"] or row["last_sync_time"]
-        return None
+        return row["last_sync_time"] if row else None
 
     # ---- alias seeding ----------------------------------------------------
 
