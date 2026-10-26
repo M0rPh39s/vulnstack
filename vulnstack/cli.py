@@ -36,7 +36,30 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
+AUTHOR = "M0rPh39s"
+REPO_URL = "https://github.com/M0rPh39s/vulnstack"
+
+# Decorative banner printed after every command.
+ASCII_ART = r"""
+__     __    _       _____ _             _
+\ \   / /   | |     / ____| |           | |
+ \ \ / /   _| |_ __ | (___ | |_ __ _  ___| | __
+  \ V / | | | | '_ \ \___ \| __/ _` |/ __| |/ /
+   \_/| |_| | | | | |____) | || (_| | (__|   <
+       \__,_|_|_| |_|_____/ \__\__,_|\___|_|\_\
+"""
+
 _err_console = Console(stderr=True)
+
+
+def _print_footer() -> None:
+    """Print the VulnStack ASCII banner and credit after a command.
+
+    Written to stderr so it never corrupts machine-readable (JSON/HTML) output
+    sent to stdout.
+    """
+    _err_console.print(f"[cyan]{ASCII_ART}[/cyan]")
+    _err_console.print(f"[bold]Created by {AUTHOR}[/bold]  •  {REPO_URL}")
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
         "correlation for Debian-based Linux.",
         epilog="Run 'vulnstack <command> --help' for command-specific options.",
     )
-    parser.add_argument("--version", action="version", version=f"vulnstack {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"vulnstack {__version__}\nCreated by {AUTHOR} · {REPO_URL}",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable diagnostic output")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -516,13 +543,8 @@ def _missing_subcommand(parser: argparse.ArgumentParser, command: str) -> int:
     return EXIT_USAGE
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    verbose = getattr(args, "verbose", False)
-    configure_logging(verbose)
-    console = Console()
-
+def _run(parser: argparse.ArgumentParser, args: argparse.Namespace,
+         verbose: bool, console: Console) -> int:
     if args.command is None:
         parser.print_help()
         return EXIT_USAGE
@@ -576,6 +598,19 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return EXIT_USAGE
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    verbose = getattr(args, "verbose", False)
+    configure_logging(verbose)
+    console = Console()
+    try:
+        return _run(parser, args, verbose, console)
+    finally:
+        # ASCII-art credit banner after every command (on stderr).
+        _print_footer()
 
 
 if __name__ == "__main__":  # pragma: no cover

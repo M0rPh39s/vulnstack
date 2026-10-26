@@ -1,5 +1,7 @@
 # VulnStack
 
+> Created by **M0rPh39s** · https://github.com/M0rPh39s/vulnstack
+
 **VulnStack** is a non-AI website technology fingerprinting and known-vulnerability
 correlation tool for Debian-based Linux. Point it at a URL and it will
 fingerprint the technologies in use, extract versions where the evidence

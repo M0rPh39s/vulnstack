@@ -9,7 +9,7 @@ description = "Non-AI website technology fingerprinting and known-vulnerability 
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-authors = [{ name = "VulnStack contributors" }]
+authors = [{ name = "M0rPh39s", email = "ghassenboulares7@gmail.com" }]
 keywords = ["security", "cve", "fingerprinting", "vulnerability", "nvd", "scanner"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -38,8 +38,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/m0rph39s/vulnstack"
-Repository = "https://github.com/m0rph39s/vulnstack"
+Homepage = "https://github.com/M0rPh39s/vulnstack"
+Repository = "https://github.com/M0rPh39s/vulnstack"
 
 [project.scripts]
 vulnstack = "vulnstack.cli:main"

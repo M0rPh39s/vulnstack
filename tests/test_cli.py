@@ -98,6 +98,14 @@ def test_cache_clear(isolated_env, capsys):
     assert "Cleared" in capsys.readouterr().out
 
 
+def test_credit_banner_printed_after_command(isolated_env, capsys):
+    main(["db", "status"])
+    err = capsys.readouterr().err
+    # ASCII-art credit banner goes to stderr so stdout stays machine-readable.
+    assert "Created by M0rPh39s" in err
+    assert "github.com/M0rPh39s/vulnstack" in err
+
+
 def test_scan_error_exit_one(isolated_env, monkeypatch, capsys):
     # A blocked/unreachable target yields a runtime error exit code.
     assert main(["scan", "http://127.0.0.1/"]) == 1
