@@ -9,7 +9,7 @@ description = "Non-AI website technology fingerprinting and known-vulnerability 
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-authors = [{ name = "M0rPh39s", email = "ghassenboulares7@gmail.com" }]
+authors = [{ name = "M0rPh39s", email = "ghassen.boulares@medtech.tn" }]
 keywords = ["security", "cve", "fingerprinting", "vulnerability", "nvd", "scanner"]
 classifiers = [
     "Development Status :: 4 - Beta",
