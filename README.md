@@ -18,6 +18,8 @@ products → query the local CVE database → compare versions → classify →
 report. You never have to identify technologies by hand or look up individual
 CVE IDs.
 
+![vulnstack scan output](docs/scan-screenshot.svg)
+
 > **No AI.** VulnStack uses only conventional software techniques — HTTP header
 > inspection, HTML parsing, regular expressions, static fingerprints, CPE
 > identifiers, indexed SQL queries and explicit version-comparison rules.
