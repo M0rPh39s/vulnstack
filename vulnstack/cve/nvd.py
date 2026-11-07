@@ -275,22 +275,44 @@ class NvdProvider(Provider):
         *,
         modified_since: datetime | None,
         full: bool,
+        published_since: datetime | None = None,
         progress: ProgressCallback | None = None,
     ) -> Iterator[Vulnerability]:
+        # Historical backfill: page records by *publication* date so that older
+        # CVEs are pulled in regardless of when they were last modified. Takes
+        # precedence over the incremental path when requested.
+        if published_since is not None:
+            yield from self._windowed(
+                published_since, "pubStartDate", "pubEndDate", progress
+            )
+            return
+
         if full or modified_since is None:
             yield from self._paginate({}, progress)
             return
 
         # Incremental: iterate over <=120-day windows from the watermark to now.
+        yield from self._windowed(
+            modified_since, "lastModStartDate", "lastModEndDate", progress
+        )
+
+    def _windowed(
+        self,
+        since: datetime,
+        start_key: str,
+        end_key: str,
+        progress: ProgressCallback | None,
+    ) -> Iterator[Vulnerability]:
+        """Page a date range in <=120-day windows (the NVD per-request limit)."""
         now = datetime.now(timezone.utc)
-        window_start = modified_since
+        window_start = since
         if window_start.tzinfo is None:
             window_start = window_start.replace(tzinfo=timezone.utc)
         while window_start < now:
             window_end = min(window_start + timedelta(days=MAX_WINDOW_DAYS), now)
             base = {
-                "lastModStartDate": _nvd_timestamp(window_start),
-                "lastModEndDate": _nvd_timestamp(window_end),
+                start_key: _nvd_timestamp(window_start),
+                end_key: _nvd_timestamp(window_end),
             }
             yield from self._paginate(base, progress)
             window_start = window_end

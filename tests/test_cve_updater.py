@@ -17,10 +17,12 @@ class FakeProvider(Provider):
         self._latest = latest
         self.last_modified_since = None
         self.last_full = None
+        self.last_published_since = None
 
-    def fetch(self, *, modified_since, full, progress=None):
+    def fetch(self, *, modified_since, full, published_since=None, progress=None):
         self.last_modified_since = modified_since
         self.last_full = full
+        self.last_published_since = published_since
         if self._fail:
             raise ProviderError("simulated provider failure")
         for i, v in enumerate(self._vulns):
@@ -136,7 +138,7 @@ def test_duplicate_records_deduplicated(tmp_db):
 class MidStreamFailProvider(FakeProvider):
     """Yields some records, then fails (e.g. NVD dies on page 2)."""
 
-    def fetch(self, *, modified_since, full, progress=None):
+    def fetch(self, *, modified_since, full, published_since=None, progress=None):
         self.last_modified_since = modified_since
         self.last_full = full
         yield from self._vulns
@@ -144,7 +146,7 @@ class MidStreamFailProvider(FakeProvider):
 
 
 class ExplodingProvider(FakeProvider):
-    def fetch(self, *, modified_since, full, progress=None):
+    def fetch(self, *, modified_since, full, published_since=None, progress=None):
         raise RuntimeError("boom")
         yield  # pragma: no cover
 
@@ -203,6 +205,49 @@ def test_watermark_without_tz_is_treated_as_utc(tmp_db):
     provider = FakeProvider([], latest=None)
     Updater(tmp_db, provider).run()
     assert provider.last_modified_since.tzinfo is not None
+
+
+# ---- historical backfill ----------------------------------------------------
+
+def test_backfill_requests_publication_window_and_inserts(tmp_db):
+    provider = FakeProvider(
+        [make_vuln("CVE-2020-0001", version="1.0")], latest="2020-06-01T00:00:00"
+    )
+    result = Updater(tmp_db, provider).run(years=6)
+    assert result.status == "success"
+    assert result.backfill is True
+    assert result.inserted == 1
+    # Fetched by publication date, not the modification window.
+    assert provider.last_published_since is not None
+    assert provider.last_modified_since is None
+    assert provider.last_published_since.tzinfo is not None
+    # ~6 years back.
+    age_days = (datetime.now(timezone.utc) - provider.last_published_since).days
+    assert 6 * 365 - 2 <= age_days <= 6 * 365 + 2
+
+
+def test_backfill_is_additive_and_keeps_existing_records(tmp_db):
+    Updater(tmp_db, FakeProvider(
+        [make_vuln("CVE-2025-0001", version="2.0")], latest="2025-06-01T00:00:00")).run()
+    before = tmp_db.get_source("fake")["last_source_modified"]
+    Updater(tmp_db, FakeProvider(
+        [make_vuln("CVE-2020-0001", version="1.0")], latest="2020-01-01T00:00:00")).run(years=6)
+    assert tmp_db.count_vulnerabilities() == 2
+    # An old backfill must not rewind the incremental watermark.
+    assert tmp_db.get_source("fake")["last_source_modified"] == before
+
+
+def test_backfill_failure_keeps_database(tmp_db):
+    Updater(tmp_db, FakeProvider(
+        [make_vuln("CVE-2025-0001", version="2.0")], latest="2025-06-01T00:00:00")).run()
+    result = Updater(tmp_db, FakeProvider([], fail=True)).run(years=6)
+    assert result.status == "failed" and result.errors == 1
+    assert tmp_db.count_vulnerabilities() == 1
+
+
+def test_backfill_rejects_non_positive_years(tmp_db):
+    with pytest.raises(ValueError):
+        Updater(tmp_db, FakeProvider([])).run(years=0)
 
 
 def test_no_new_records_keeps_existing_watermark(tmp_db):
