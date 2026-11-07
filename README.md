@@ -153,7 +153,7 @@ vulnstack cve search "<term>" [--limit N]
 vulnstack cve show CVE-YYYY-NNNNN
 
 vulnstack db update [--full] [--source repo|nvd|cvelist] [--bootstrap-days N]
-                    [--cvelist-path PATH]
+                    [--years N] [--cvelist-path PATH]
 vulnstack db publish --out DIR [--delta-days N]
 vulnstack db status
 vulnstack db stats
@@ -208,6 +208,14 @@ The database lives at `~/.local/share/vulnstack/vulnstack.db` by default
   a recent window (`--bootstrap-days`, default 30) and tells you so; run a full
   sync for the complete dataset. The window is whole days, and a busy day is
   large: one day of NVD modifications was ~3,900 records when measured.
+- **`vulnstack db update --source nvd --years N`** — historical backfill. Adds
+  CVEs *published* within the last `N` years (e.g. `--years 6`), paging NVD by
+  publication date in bounded windows. This is how older CVEs get into the
+  database: the incremental path only tracks records *modified* since the last
+  sync, so a fresh or recent-only database misses vulnerabilities in older
+  software versions until you backfill. The backfill is additive — it upserts
+  into the existing database without clearing it, and never rewinds the
+  incremental watermark.
 - **`vulnstack db update --full`** — with the default source, re-downloads the
   whole published database. With `--source nvd`, a full synchronization/rebuild. This can
   download the entire NVD corpus (hundreds of thousands of records): expect
@@ -256,20 +264,24 @@ Things to know:
 ### Publishing the database (maintainers)
 
 1. Add a repository secret `NVD_API_KEY`.
-2. Seed the first release. Either run the *Update vulnerability database*
-   workflow manually with **full** ticked, or — if a full NVD crawl would exceed
-   GitHub's 6-hour job limit — do it locally and upload by hand:
+2. Seed the first release with history. Run the *Update vulnerability database*
+   workflow manually and set **backfill_years** (default 6) — this pulls older
+   CVEs by publication date so the published database covers past versions, not
+   just recent changes. Ticking **full** instead crawls the entire NVD corpus;
+   if that would exceed GitHub's 6-hour job limit, seed locally and upload by
+   hand:
    ```bash
    export NVD_API_KEY=...
-   vulnstack db update --source nvd --full
+   vulnstack db update --source nvd --years 6   # or --full for the whole corpus
    vulnstack db publish --out dist
    gh release create db-latest --latest=false --title "Vulnerability database" --notes "Built from NVD"
    gh release upload db-latest dist/vulnstack-db-full.sqlite.gz dist/vulnstack-db-delta.jsonl.gz
    gh release upload db-latest dist/manifest.json     # always last
    ```
 3. After that the daily workflow starts from the published database, fetches
-   what changed from NVD, and republishes. `db publish` refuses to publish an
-   empty database or one without a successful sync.
+   what changed from NVD, and republishes — so the backfilled history persists
+   without being re-crawled each run. `db publish` refuses to publish an empty
+   database or one without a successful sync.
 
 The workflow itself has not been run end to end in CI; the publish/pull logic is
 covered by the test suite and was exercised against real NVD data locally.

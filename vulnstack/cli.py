@@ -125,6 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
                              help="repo (published database, default), nvd (query NVD directly) or cvelist")
     p_db_update.add_argument("--bootstrap-days", type=int, default=30,
                              help="window for the first incremental run (default 30)")
+    p_db_update.add_argument("--years", type=int, default=None,
+                             help="backfill older CVEs published within the last N years "
+                                  "(by publication date; for 'nvd'/'cvelist' sources)")
     p_db_update.add_argument("--cvelist-path", default=None,
                              help="local path for the 'cvelist' source")
     p_db_update.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
@@ -359,6 +362,13 @@ def cmd_db_publish(args: argparse.Namespace, cfg: config_mod.Config, console: Co
 def cmd_db_update(args: argparse.Namespace, cfg: config_mod.Config, console: Console) -> int:
     source = args.source or cfg.default_source
     if source == "repo":
+        if getattr(args, "years", None) is not None:
+            console.print(
+                "[yellow]--years applies to the 'nvd'/'cvelist' sources; the "
+                "published 'repo' database already includes historical CVEs. "
+                "Use '--source nvd --years N' to backfill from NVD directly.[/yellow]"
+            )
+            return EXIT_ERROR
         return _pull_database(args, cfg, console)
     provider_kwargs: dict = {}
     if source == "nvd":
@@ -382,7 +392,12 @@ def cmd_db_update(args: argparse.Namespace, cfg: config_mod.Config, console: Con
     console.print(f"Last successful synchronization: {last or 'never'}")
     if config_mod.nvd_api_key() and source == "nvd":
         console.print("[dim]Using NVD_API_KEY from the environment.[/dim]")
-    console.print("Fetching records..." if not args.full else "Performing full synchronization...")
+    if args.years is not None:
+        console.print(f"Backfilling CVEs published in the last {args.years} year(s)...")
+    else:
+        console.print(
+            "Fetching records..." if not args.full else "Performing full synchronization..."
+        )
 
     with Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -396,6 +411,7 @@ def cmd_db_update(args: argparse.Namespace, cfg: config_mod.Config, console: Con
         result = updater.run(
             full=args.full,
             bootstrap_days=args.bootstrap_days,
+            years=args.years,
             progress=_progress_callback(progress, task),
         )
     db.close()

@@ -48,6 +48,7 @@ class UpdateResult:
     latest_source_modified: str | None = None
     full: bool = False
     bootstrap: bool = False
+    backfill: bool = False
     message: str = ""
     notes: list[str] = field(default_factory=list)
 
@@ -85,11 +86,75 @@ class Updater:
         *,
         full: bool = False,
         bootstrap_days: int = DEFAULT_BOOTSTRAP_DAYS,
+        years: int | None = None,
         progress: ProgressFn | None = None,
     ) -> UpdateResult:
+        if years is not None:
+            return self._run_backfill(years=years, progress=progress)
         if full:
             return self._run_full(progress=progress)
         return self._run_incremental(bootstrap_days=bootstrap_days, progress=progress)
+
+    # ---- historical backfill ---------------------------------------------
+
+    def _run_backfill(self, *, years: int, progress: ProgressFn | None) -> UpdateResult:
+        """Add older CVEs by *publication* date, without disturbing existing
+        records. Unlike a full rebuild this is additive (upserts into the live
+        database), so it can safely seed history on top of an incremental DB."""
+        if years <= 0:
+            raise ValueError("years must be a positive integer")
+        self.db.initialize()
+        published_since = datetime.now(timezone.utc) - timedelta(days=365 * years)
+
+        result = UpdateResult(
+            source=self.provider.name, status="failed", full=False, backfill=True
+        )
+        result.notes.append(
+            f"Backfilling CVEs published since {published_since.date().isoformat()} "
+            f"(~{years} year(s) back)."
+        )
+        source_row = self.db.get_source(self.provider.name)
+        prior_watermark = source_row["last_source_modified"] if source_row else None
+
+        inserted = updated = 0
+        try:
+            stream = self.provider.fetch(
+                modified_since=None,
+                full=False,
+                published_since=published_since,
+                progress=progress,
+            )
+            for batch in _batched(stream, BATCH_SIZE):
+                ins, upd = self.db.upsert_vulnerabilities(batch)
+                inserted += ins
+                updated += upd
+        except ProviderError as exc:
+            self.db.record_source_sync(self.provider.name, status="failed", error=str(exc))
+            result.errors = 1
+            result.message = f"backfill failed; existing database kept: {exc}"
+            return result
+        except Exception as exc:  # pragma: no cover - unexpected
+            self.db.record_source_sync(self.provider.name, status="failed", error=repr(exc))
+            result.errors = 1
+            result.message = f"unexpected error; existing database kept: {exc}"
+            return result
+
+        # Advance the modification watermark only forward: a backfill must never
+        # rewind the incremental cursor past records already ingested.
+        latest = self.provider.latest_source_modified()
+        new_watermark = prior_watermark
+        if latest is not None and (prior_watermark is None or latest > prior_watermark):
+            new_watermark = latest
+        self.db.record_source_sync(
+            self.provider.name, status="success", source_modified=new_watermark
+        )
+        result.status = "success"
+        result.inserted = inserted
+        result.updated = updated
+        result.latest_source_modified = new_watermark
+        result.last_sync = self.db.get_source(self.provider.name)["last_sync_time"]
+        result.message = f"backfill completed ({inserted} new, {updated} updated)"
+        return result
 
     # ---- incremental ------------------------------------------------------
 

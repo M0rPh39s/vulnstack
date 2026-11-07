@@ -30,14 +30,17 @@ class Provider(ABC):
         *,
         modified_since: datetime | None,
         full: bool,
+        published_since: datetime | None = None,
         progress: ProgressCallback | None = None,
     ) -> Iterator[Vulnerability]:
         """Yield normalized vulnerability records.
 
-        ``modified_since`` requests an incremental window; ``full`` requests a
-        complete synchronization. Implementations must raise
-        :class:`ProviderError` on failure rather than returning partial/false
-        success.
+        ``modified_since`` requests an incremental window (records changed
+        since that time); ``published_since`` requests a historical backfill of
+        records *first published* on or after that time (used to seed older
+        CVEs); ``full`` requests a complete synchronization. Implementations
+        must raise :class:`ProviderError` on failure rather than returning
+        partial/false success.
         """
         raise NotImplementedError
 

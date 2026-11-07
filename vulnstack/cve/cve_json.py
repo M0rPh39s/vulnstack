@@ -164,6 +164,7 @@ class CveListProvider(Provider):
         *,
         modified_since: datetime | None,
         full: bool,
+        published_since: datetime | None = None,
         progress: ProgressCallback | None = None,
     ) -> Iterator[Vulnerability]:
         # A local tree is always read in full: every file must be opened to

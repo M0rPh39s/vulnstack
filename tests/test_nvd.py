@@ -185,6 +185,25 @@ def test_incremental_date_windows_bounded():
         assert "lastModStartDate" in req and "lastModEndDate" in req
 
 
+def test_backfill_uses_publication_date_windows():
+    # A >120-day publication backfill must split into bounded pub-date windows.
+    session = FakeSession([
+        FakeResp(200, _page([], total=0, start=0)),
+        FakeResp(200, _page([], total=0, start=0)),
+        FakeResp(200, _page([], total=0, start=0)),
+        FakeResp(200, _page([], total=0, start=0)),
+        FakeResp(200, _page([], total=0, start=0)),
+    ])
+    provider = nvd.NvdProvider(session=session)
+    since = datetime.now(timezone.utc).replace(microsecond=0)
+    since = since.replace(year=since.year - 1)  # ~365 days ago
+    list(provider.fetch(modified_since=None, full=False, published_since=since))
+    assert len(session.requests) >= 4
+    for req in session.requests:
+        assert "pubStartDate" in req and "pubEndDate" in req
+        assert "lastModStartDate" not in req
+
+
 def test_api_key_sent_in_header_not_logged():
     session = FakeSession([FakeResp(200, _page([], total=0, start=0))])
     provider = nvd.NvdProvider(session=session, api_key="SECRET")
