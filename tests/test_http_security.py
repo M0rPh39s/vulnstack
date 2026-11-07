@@ -46,6 +46,30 @@ def test_ipv4_mapped_ipv6_blocked():
     assert is_public_ip("::ffff:10.0.0.1") is False
 
 
+def test_nat64_wrapping_public_ipv4_is_public():
+    # 64:ff9b::/96 well-known prefix embedding a public v4 (DNS64/NAT64 synth).
+    assert is_public_ip("64:ff9b::dea:d1ae") is True   # -> 13.234.209.174
+    assert is_public_ip("64:ff9b::808:808") is True     # -> 8.8.8.8
+
+
+def test_nat64_wrapping_private_ipv4_still_blocked():
+    assert is_public_ip("64:ff9b::7f00:1") is False     # -> 127.0.0.1
+    assert is_public_ip("64:ff9b::a00:5") is False       # -> 10.0.0.5
+    assert is_public_ip("64:ff9b::a9fe:a9fe") is False   # -> 169.254.169.254
+
+
+def test_host_with_public_v4_and_nat64_aaaa_allowed(monkeypatch):
+    # The real failure mode in a DNS64/NAT64 sandbox: one A record + one
+    # synthesised NAT64 AAAA for the same public host must not look like rebinding.
+    from vulnstack import http_client
+    monkeypatch.setattr(
+        http_client, "_resolve", lambda host: ["13.234.209.174", "64:ff9b::dea:d1ae"]
+    )
+    host, ips = http_client.validate_url_all("https://example.com/")
+    assert host == "example.com"
+    assert ips == ["13.234.209.174", "64:ff9b::dea:d1ae"]
+
+
 def test_hostname_resolving_to_private_blocked(monkeypatch):
     def fake_getaddrinfo(host, *a, **k):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]

@@ -42,6 +42,11 @@ log = get_logger("http")
 ALLOWED_SCHEMES = ("http", "https")
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
+# NAT64 well-known prefix (RFC 6052). On DNS64/NAT64 networks a public host's
+# AAAA record is synthesised as this prefix with the real IPv4 address in the
+# low 32 bits; reachability is decided by that embedded IPv4, not the wrapper.
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+
 
 class ScanSafetyError(Exception):
     """Raised when a target or redirect violates the network-safety policy."""
@@ -72,6 +77,18 @@ def is_public_ip(ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    if isinstance(addr, ipaddress.IPv6Address):
+        # IPv4-mapped / 6to4 / NAT64 wrap an IPv4 address: judge by the embedded
+        # v4 so a wrapper can neither smuggle a private address past the policy
+        # nor be wrongly blocked when it carries a public one. Checked before the
+        # reserved-range test because some wrappers (e.g. 64:ff9b::/96) are
+        # themselves flagged reserved.
+        if addr.ipv4_mapped is not None:
+            return is_public_ip(str(addr.ipv4_mapped))
+        if addr.sixtofour is not None:
+            return is_public_ip(str(addr.sixtofour))
+        if addr in _NAT64_WELL_KNOWN:
+            return is_public_ip(str(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)))
     if (
         addr.is_private
         or addr.is_loopback
@@ -81,12 +98,6 @@ def is_public_ip(ip: str) -> bool:
         or addr.is_unspecified
     ):
         return False
-    if isinstance(addr, ipaddress.IPv6Address):
-        # IPv4-mapped / 6to4 IPv6 can smuggle private v4 addresses.
-        if addr.ipv4_mapped is not None:
-            return is_public_ip(str(addr.ipv4_mapped))
-        if addr.sixtofour is not None:
-            return is_public_ip(str(addr.sixtofour))
     return True
 
 
